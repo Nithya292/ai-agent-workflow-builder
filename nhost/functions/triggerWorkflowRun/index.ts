@@ -1,28 +1,24 @@
 export default async function handler(req: Request) {
-  if (req.method !== "POST") {
-    return new Response(
-      JSON.stringify({
-        error: "Method not allowed",
-      }),
-      {
-        status: 405,
-        headers: {
-          "Content-Type": "application/json",
-        },
-      }
-    );
-  }
-
   try {
+    if (req.method !== "POST") {
+      return new Response(
+        JSON.stringify({
+          error: "Method not allowed",
+        }),
+        {
+          status: 405,
+          headers: {
+            "Content-Type": "application/json",
+          },
+        }
+      );
+    }
+
     const body = await req.json();
 
-    console.log(
-      "triggerWorkflowRun received:",
-      body
-    );
+    console.log("Webhook received:", body);
 
-    const workflowId =
-      body?.input?.workflow_id;
+    const workflowId = body?.workflow_id;
 
     if (!workflowId) {
       return new Response(
@@ -38,21 +34,11 @@ export default async function handler(req: Request) {
       );
     }
 
-    /*
-     * Temporary response so we can verify that
-     * the Hasura Action → Nhost Function connection
-     * is working.
-     *
-     * We will add the actual workflow execution logic
-     * after the webhook connection is confirmed.
-     */
-
     return new Response(
       JSON.stringify({
         run_id: workflowId,
         status: "started",
-        message:
-          "Workflow trigger received successfully.",
+        message: "Workflow trigger received successfully.",
       }),
       {
         status: 200,
@@ -62,10 +48,7 @@ export default async function handler(req: Request) {
       }
     );
   } catch (error) {
-    console.error(
-      "triggerWorkflowRun error:",
-      error
-    );
+    console.error("Webhook error:", error);
 
     return new Response(
       JSON.stringify({
