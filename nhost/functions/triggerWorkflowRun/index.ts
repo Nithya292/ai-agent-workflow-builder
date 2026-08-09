@@ -1,7 +1,9 @@
 export default function handler(req: any, res: any) {
-  console.log("Received body:", req.body);
+  console.log("FULL BODY:", JSON.stringify(req.body));
 
-  const workflowId = req.body?.workflow_id;
+  const workflowId = req.body?.input?.workflow_id;
+
+  console.log("WORKFLOW ID:", workflowId);
 
   if (!workflowId) {
     return res.status(200).json({
