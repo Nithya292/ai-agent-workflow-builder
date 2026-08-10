@@ -96,7 +96,7 @@ export default function Home() {
       const result = await triggerWorkflow({
         variables: {
           workflow_id:
-            "bbfc41c1-95cf-4a05-b6f1-f46df3dbcde5",
+            "ba8cf45f-2ec6-4751-b403-0261c6f7fbe9",
         },
       });
 

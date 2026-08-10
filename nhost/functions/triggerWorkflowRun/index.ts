@@ -14,7 +14,66 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    const mutation = `
+    // 1. Get workflow steps
+    const stepsQuery = `
+      query GetWorkflowSteps($workflow_id: uuid!) {
+        workflow_steps(
+          where: {
+            workflow_id: {
+              _eq: $workflow_id
+            }
+          }
+          order_by: {
+            step_order: asc
+          }
+        ) {
+          id
+          name
+          type
+          step_order
+          config
+        }
+      }
+    `;
+
+    const stepsResponse = await fetch(GRAPHQL_URL!, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-hasura-admin-secret": process.env.NHOST_ADMIN_SECRET!,
+      },
+      body: JSON.stringify({
+        query: stepsQuery,
+        variables: {
+          workflow_id: workflowId,
+        },
+      }),
+    });
+
+    const stepsResult = await stepsResponse.json();
+
+    console.log("WORKFLOW STEPS:", stepsResult);
+
+    if (stepsResult.errors) {
+      return res.status(200).json({
+        run_id: "00000000-0000-0000-0000-000000000000",
+        status: "failed",
+        message: stepsResult.errors[0].message,
+      });
+    }
+
+    const steps = stepsResult.data.workflow_steps;
+
+    if (!steps || steps.length === 0) {
+      return res.status(200).json({
+        run_id: "00000000-0000-0000-0000-000000000000",
+        status: "failed",
+        message: "No workflow steps found",
+      });
+    }
+
+    // 2. Create workflow run
+    const createRunMutation = `
       mutation CreateWorkflowRun($workflow_id: uuid!) {
         insert_workflow_runs_one(
           object: {
@@ -30,40 +89,61 @@ export default async function handler(req: any, res: any) {
       }
     `;
 
-    const response = await fetch(GRAPHQL_URL!, {
+    const runResponse = await fetch(GRAPHQL_URL!, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "x-hasura-admin-secret": process.env.NHOST_ADMIN_SECRET!,
       },
       body: JSON.stringify({
-        query: mutation,
+        query: createRunMutation,
         variables: {
           workflow_id: workflowId,
         },
       }),
     });
 
-    const result = await response.json();
+    const runResult = await runResponse.json();
 
-    console.log("GraphQL result:", result);
+    console.log("WORKFLOW RUN:", runResult);
 
-    if (result.errors) {
-      console.error("GraphQL error:", result.errors);
-
+    if (runResult.errors) {
       return res.status(200).json({
         run_id: "00000000-0000-0000-0000-000000000000",
         status: "failed",
-        message: result.errors[0].message,
+        message: runResult.errors[0].message,
       });
     }
 
-    const run = result.data.insert_workflow_runs_one;
+    const run = runResult.data.insert_workflow_runs_one;
+
+    // 3. Log each workflow step
+    for (const step of steps) {
+      console.log(
+        `Executing step ${step.step_order}: ${step.name} (${step.type})`
+      );
+
+      if (step.type === "llm_call") {
+        console.log("LLM step reached");
+      }
+
+      if (step.type === "http_request") {
+        console.log("HTTP request step reached");
+      }
+
+      if (step.type === "conditional_branch") {
+        console.log("Conditional branch step reached");
+      }
+
+      if (step.type === "approval_gate") {
+        console.log("Approval gate step reached");
+      }
+    }
 
     return res.status(200).json({
       run_id: run.id,
-      status: run.status,
-      message: run.message,
+      status: "started",
+      message: `Workflow started successfully. ${steps.length} steps found.`,
     });
   } catch (error: any) {
     console.error("Function error:", error);
