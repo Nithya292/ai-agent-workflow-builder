@@ -179,11 +179,32 @@ export default async function handler(req: any, res: any) {
   if (!apiResponse.ok) {
     throw new Error("HTTP request failed");
   }
+
+  // Store API result for the next workflow step
+  (globalThis as any).workflowApiData = apiData;
 }
 
       if (step.type === "conditional_branch") {
-        console.log("Conditional branch step reached");
-      }
+  console.log("Conditional branch step reached");
+
+  const apiData = (globalThis as any).workflowApiData;
+
+  if (!apiData) {
+    throw new Error(
+      "No API data available for conditional branch"
+    );
+  }
+
+  if (apiData.completed === true) {
+    console.log(
+      "CONDITION RESULT: TRUE - API task is completed"
+    );
+  } else {
+    console.log(
+      "CONDITION RESULT: FALSE - API task is not completed"
+    );
+  }
+}
 
       if (step.type === "approval_gate") {
         console.log("Approval gate step reached");
