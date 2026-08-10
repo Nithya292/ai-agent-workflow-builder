@@ -124,8 +124,46 @@ export default async function handler(req: any, res: any) {
       );
 
       if (step.type === "llm_call") {
-        console.log("LLM step reached");
-      }
+  console.log("LLM step reached");
+
+  const groqResponse = await fetch(
+    "https://api.groq.com/openai/v1/chat/completions",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "llama-3.1-8b-instant",
+        messages: [
+          {
+            role: "user",
+            content:
+              "You are an AI workflow assistant. Give a short helpful response confirming that the workflow AI step is working.",
+          },
+        ],
+        temperature: 0.7,
+      }),
+    }
+  );
+
+  const groqResult = await groqResponse.json();
+
+  console.log("AI RESPONSE:", groqResult);
+
+  if (!groqResponse.ok) {
+    throw new Error(
+      groqResult?.error?.message ||
+        "Groq API request failed"
+    );
+  }
+
+  const aiMessage =
+    groqResult?.choices?.[0]?.message?.content;
+
+  console.log("AI MESSAGE:", aiMessage);
+}
 
       if (step.type === "http_request") {
         console.log("HTTP request step reached");
