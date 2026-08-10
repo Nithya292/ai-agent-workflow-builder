@@ -1,15 +1,6 @@
 "use client";
-
+import { gql, useMutation } from "@apollo/client";
 import { useState } from "react";
-import { gql } from "@apollo/client";
-import { useMutation } from "@apollo/client/react";
-
-const stepTypes = [
-  "llm_call",
-  "http_request",
-  "conditional_branch",
-  "approval_gate",
-];
 
 const TRIGGER_WORKFLOW = gql`
   mutation TriggerWorkflowRun($workflow_id: uuid!) {
@@ -21,9 +12,22 @@ const TRIGGER_WORKFLOW = gql`
   }
 `;
 
+const stepTypes = [
+  "llm_call",
+  "http_request",
+  "conditional_branch",
+  "approval_gate",
+];
+
 export default function Home() {
   const [workflowName, setWorkflowName] =
     useState("AI Demo Workflow");
+
+  const [latestRun, setLatestRun] = useState<{
+    run_id: string;
+    status: string;
+    message: string;
+  } | null>(null);
 
   const [steps, setSteps] = useState([
     {
@@ -96,17 +100,24 @@ export default function Home() {
       const result = await triggerWorkflow({
         variables: {
           workflow_id:
-            "ba8cf45f-2ec6-4751-b403-0261c6f7fbe9",
+            "ba8cf45f-2ec6-4751-b403-0261c6f7bfe9",
         },
       });
 
+      const workflowResult =
+        result.data?.triggerWorkflowRun;
+
       console.log(
         "Workflow result:",
-        result.data
+        workflowResult
       );
 
+      if (workflowResult) {
+        setLatestRun(workflowResult);
+      }
+
       alert(
-        result.data?.triggerWorkflowRun?.message ||
+        workflowResult?.message ||
           "Workflow started."
       );
     } catch (error) {
@@ -122,8 +133,8 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen bg-gray-100 p-8">
-      <div className="mx-auto max-w-5xl">
+    <main className="min-h-screen bg-gray-100">
+      <div className="mx-auto max-w-7xl px-6 py-10">
 
         {/* HEADER */}
         <div className="mb-8">
@@ -293,9 +304,36 @@ export default function Home() {
                 Latest Run
               </h2>
 
-              <p className="text-gray-500">
-                No workflow run yet.
-              </p>
+              {latestRun ? (
+                <div className="space-y-3">
+
+                  <p>
+                    <span className="font-semibold">
+                      Status:
+                    </span>{" "}
+                    {latestRun.status}
+                  </p>
+
+                  <p>
+                    <span className="font-semibold">
+                      Message:
+                    </span>{" "}
+                    {latestRun.message}
+                  </p>
+
+                  <p className="break-all text-sm text-gray-500">
+                    <span className="font-semibold">
+                      Run ID:
+                    </span>{" "}
+                    {latestRun.run_id}
+                  </p>
+
+                </div>
+              ) : (
+                <p className="text-gray-500">
+                  No workflow run yet.
+                </p>
+              )}
 
             </div>
 
