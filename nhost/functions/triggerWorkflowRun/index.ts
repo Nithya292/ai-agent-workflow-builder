@@ -166,8 +166,20 @@ export default async function handler(req: any, res: any) {
 }
 
       if (step.type === "http_request") {
-        console.log("HTTP request step reached");
-      }
+  console.log("HTTP request step reached");
+
+  const apiResponse = await fetch(
+    "https://jsonplaceholder.typicode.com/todos/1"
+  );
+
+  const apiData = await apiResponse.json();
+
+  console.log("API RESPONSE:", apiData);
+
+  if (!apiResponse.ok) {
+    throw new Error("HTTP request failed");
+  }
+}
 
       if (step.type === "conditional_branch") {
         console.log("Conditional branch step reached");
