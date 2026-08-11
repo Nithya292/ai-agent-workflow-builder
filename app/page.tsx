@@ -4,10 +4,6 @@ import { gql } from "@apollo/client";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "@apollo/client/react";
 
-/* -----------------------------------------
-   WORKFLOW ID
------------------------------------------ */
-
 const WORKFLOW_ID =
   "ba8cf45f-2ec6-4751-b403-0261c6f7fbe9";
 
@@ -37,7 +33,7 @@ const GET_WORKFLOW_STEPS = gql`
 `;
 
 /* -----------------------------------------
-   GRAPHQL MUTATION
+   TRIGGER WORKFLOW
 ----------------------------------------- */
 
 const TRIGGER_WORKFLOW = gql`
@@ -49,6 +45,43 @@ const TRIGGER_WORKFLOW = gql`
     }
   }
 `;
+
+/* -----------------------------------------
+   APPROVE WORKFLOW
+----------------------------------------- */
+
+const APPROVE_WORKFLOW = async (runId: string) => {
+  const response = await fetch(
+    "https://rpwtchgtqyirntusolfc.functions.ap-south-1.nhost.run/approveStep",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        run_id: runId,
+      }),
+    }
+  );
+
+  const text = await response.text();
+
+  let result;
+
+  try {
+    result = JSON.parse(text);
+  } catch {
+    throw new Error(text || "Approval request failed");
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      result?.message || "Approval request failed"
+    );
+  }
+
+  return result;
+};
 
 /* -----------------------------------------
    TYPES
@@ -68,8 +101,20 @@ type WorkflowRun = {
   message: string;
 };
 
+type TriggerWorkflowResponse = {
+  triggerWorkflowRun: {
+    run_id: string;
+    status: string;
+    message: string;
+  };
+};
+
+type TriggerWorkflowVariables = {
+  workflow_id: string;
+};
+
 /* -----------------------------------------
-   AVAILABLE STEP TYPES
+   STEP TYPES
 ----------------------------------------- */
 
 const stepTypes = [
@@ -96,8 +141,11 @@ export default function Home() {
   const [runSteps, setRunSteps] =
     useState<string[]>([]);
 
+  const [approving, setApproving] =
+    useState(false);
+
   /* -----------------------------------------
-     LOAD WORKFLOW STEPS
+     LOAD STEPS
   ----------------------------------------- */
 
   const {
@@ -109,16 +157,19 @@ export default function Home() {
   }>(GET_WORKFLOW_STEPS);
 
   /* -----------------------------------------
-     RUN WORKFLOW
+     TRIGGER MUTATION
   ----------------------------------------- */
 
   const [
     triggerWorkflow,
     { loading: workflowLoading },
-  ] = useMutation(TRIGGER_WORKFLOW);
+  ] = useMutation<
+    TriggerWorkflowResponse,
+    TriggerWorkflowVariables
+  >(TRIGGER_WORKFLOW);
 
   /* -----------------------------------------
-     PUT DATABASE STEPS INTO STATE
+     LOAD DATABASE STEPS
   ----------------------------------------- */
 
   useEffect(() => {
@@ -213,30 +264,29 @@ export default function Home() {
       const workflowResult =
         result.data?.triggerWorkflowRun;
 
-      if (workflowResult) {
-        setLatestRun({
-          id: workflowResult.run_id,
-          status: workflowResult.status,
-          message: workflowResult.message,
-        });
-
-        /*
-          Display the workflow steps that
-          the backend executes.
-        */
-
-        setRunSteps([
-          "Generate AI Response",
-          "Get API Data",
-          "Check AI Response",
-          "Approval Required",
-        ]);
-
-        alert(
-          workflowResult.message ||
-            "Workflow started successfully."
+      if (!workflowResult) {
+        throw new Error(
+          "Workflow did not return a result"
         );
       }
+
+      setLatestRun({
+        id: workflowResult.run_id,
+        status: workflowResult.status,
+        message: workflowResult.message,
+      });
+
+      setRunSteps([
+        "Generate AI Response",
+        "Get API Data",
+        "Check AI Response",
+        "Approval Required",
+      ]);
+
+      alert(
+        workflowResult.message ||
+          "Workflow started successfully."
+      );
     } catch (error) {
       console.error(
         "Workflow error:",
@@ -244,13 +294,77 @@ export default function Home() {
       );
 
       alert(
-        "Workflow could not be started. Check the browser console."
+        error instanceof Error
+          ? error.message
+          : "Workflow could not be started."
       );
     }
   }
 
   /* -----------------------------------------
-     LOADING STATE
+     APPROVE WORKFLOW
+  ----------------------------------------- */
+
+  async function approveWorkflow() {
+    if (!latestRun?.id) {
+      alert("No workflow run found.");
+      return;
+    }
+
+    try {
+      setApproving(true);
+
+      console.log(
+        "Approving workflow:",
+        latestRun.id
+      );
+
+      const result =
+        await APPROVE_WORKFLOW(
+          latestRun.id
+        );
+
+      console.log(
+        "Approval result:",
+        result
+      );
+
+      setLatestRun((current) =>
+        current
+          ? {
+              ...current,
+              status:
+                result.status ||
+                "completed",
+              message:
+                result.message ||
+                "Workflow approved and resumed",
+            }
+          : current
+      );
+
+      alert(
+        result.message ||
+          "Workflow approved successfully."
+      );
+    } catch (error) {
+      console.error(
+        "Approval error:",
+        error
+      );
+
+      alert(
+        error instanceof Error
+          ? error.message
+          : "Approval failed."
+      );
+    } finally {
+      setApproving(false);
+    }
+  }
+
+  /* -----------------------------------------
+     LOADING
   ----------------------------------------- */
 
   if (stepsLoading) {
@@ -268,7 +382,7 @@ export default function Home() {
   }
 
   /* -----------------------------------------
-     ERROR STATE
+     ERROR
   ----------------------------------------- */
 
   if (stepsError) {
@@ -315,8 +429,6 @@ export default function Home() {
 
           <section className="rounded-xl bg-white p-6 shadow md:col-span-2">
 
-            {/* WORKFLOW NAME */}
-
             <label className="mb-2 block font-semibold text-gray-700">
               Workflow Name
             </label>
@@ -329,10 +441,9 @@ export default function Home() {
               className="mb-6 w-full rounded-lg border border-gray-300 px-4 py-3"
             />
 
-            {/* WORKFLOW STEPS HEADER */}
+            {/* STEPS HEADER */}
 
             <div className="mb-4 flex items-center justify-between">
-
               <h2 className="text-xl font-semibold">
                 Workflow Steps
               </h2>
@@ -343,7 +454,6 @@ export default function Home() {
               >
                 + Add Step
               </button>
-
             </div>
 
             {/* STEPS */}
@@ -356,16 +466,14 @@ export default function Home() {
                 </p>
               ) : (
                 steps.map((step, index) => (
-
                   <div
-                    key={step.id ?? index}
+                    key={
+                      step.id ?? index
+                    }
                     className="rounded-lg border border-gray-200 p-4"
                   >
 
-                    {/* STEP HEADER */}
-
                     <div className="mb-3 flex items-center justify-between">
-
                       <span className="font-semibold">
                         Step {index + 1}
                       </span>
@@ -378,10 +486,7 @@ export default function Home() {
                       >
                         Remove
                       </button>
-
                     </div>
-
-                    {/* STEP NAME */}
 
                     <label className="mb-1 block text-sm text-gray-600">
                       Step Name
@@ -398,8 +503,6 @@ export default function Home() {
                       className="mb-3 w-full rounded-lg border border-gray-300 px-3 py-2"
                     />
 
-                    {/* STEP TYPE */}
-
                     <label className="mb-1 block text-sm text-gray-600">
                       Step Type
                     </label>
@@ -414,7 +517,6 @@ export default function Home() {
                       }
                       className="w-full rounded-lg border border-gray-300 px-3 py-2"
                     >
-
                       {stepTypes.map(
                         (type) => (
                           <option
@@ -425,17 +527,15 @@ export default function Home() {
                           </option>
                         )
                       )}
-
                     </select>
 
                   </div>
-
                 ))
               )}
 
             </div>
 
-            {/* RUN WORKFLOW BUTTON */}
+            {/* RUN BUTTON */}
 
             <button
               onClick={runWorkflow}
@@ -456,7 +556,6 @@ export default function Home() {
             {/* ORGANIZATION */}
 
             <div className="rounded-xl bg-white p-6 shadow">
-
               <h2 className="mb-4 text-lg font-semibold">
                 Organization
               </h2>
@@ -468,19 +567,16 @@ export default function Home() {
               <p className="mt-2 text-sm text-gray-500">
                 Role: owner
               </p>
-
             </div>
 
             {/* QUOTA */}
 
             <div className="rounded-xl bg-white p-6 shadow">
-
               <h2 className="mb-4 text-lg font-semibold">
                 Usage / Quota
               </h2>
 
               <div className="mb-2 flex justify-between">
-
                 <span>
                   Calls used
                 </span>
@@ -488,15 +584,11 @@ export default function Home() {
                 <span>
                   0 / 100
                 </span>
-
               </div>
 
               <div className="h-3 rounded-full bg-gray-200">
-
                 <div className="h-3 w-0 rounded-full bg-blue-600" />
-
               </div>
-
             </div>
 
             {/* LATEST RUN */}
@@ -508,10 +600,9 @@ export default function Home() {
               </h2>
 
               {latestRun ? (
-
                 <div className="space-y-4">
 
-                  {/* RUN INFORMATION */}
+                  {/* RUN INFO */}
 
                   <div className="space-y-2">
 
@@ -519,7 +610,18 @@ export default function Home() {
                       <strong>
                         Status:
                       </strong>{" "}
-                      <span className="font-medium text-blue-600">
+
+                      <span
+                        className={`font-medium ${
+                          latestRun.status ===
+                          "paused"
+                            ? "text-orange-600"
+                            : latestRun.status ===
+                              "completed"
+                              ? "text-green-600"
+                              : "text-blue-600"
+                        }`}
+                      >
                         {latestRun.status}
                       </span>
                     </p>
@@ -532,7 +634,8 @@ export default function Home() {
                     </p>
 
                     <p className="break-all text-xs text-gray-500">
-                      Run ID: {latestRun.id}
+                      Run ID:{" "}
+                      {latestRun.id}
                     </p>
 
                   </div>
@@ -548,28 +651,61 @@ export default function Home() {
                     <div className="space-y-2">
 
                       {runSteps.map(
-                        (step, index) => (
+                        (step, index) => {
 
-                          <div
-                            key={step}
-                            className="flex items-center gap-2 rounded-lg bg-gray-50 p-2"
-                          >
+                          const isApproval =
+                            step ===
+                            "Approval Required";
 
-                            <span className="font-semibold">
-                              {index + 1}.
-                            </span>
+                          return (
+                            <div
+                              key={step}
+                              className="rounded-lg bg-gray-50 p-3"
+                            >
 
-                            <span>
-                              {step}
-                            </span>
+                              <div className="flex items-center gap-2">
 
-                            <span className="ml-auto font-semibold text-green-600">
-                              ✓
-                            </span>
+                                <span className="font-semibold">
+                                  {index + 1}.
+                                </span>
 
-                          </div>
+                                <span>
+                                  {step}
+                                </span>
 
-                        )
+                                <span className="ml-auto font-semibold">
+                                  {isApproval &&
+                                  latestRun.status ===
+                                    "paused"
+                                    ? "⏸"
+                                    : "✓"}
+                                </span>
+
+                              </div>
+
+                              {/* APPROVE BUTTON */}
+
+                              {isApproval &&
+                                latestRun.status ===
+                                  "paused" && (
+                                  <button
+                                    onClick={
+                                      approveWorkflow
+                                    }
+                                    disabled={
+                                      approving
+                                    }
+                                    className="mt-3 w-full rounded-lg bg-green-600 px-4 py-2 font-semibold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    {approving
+                                      ? "Approving..."
+                                      : "✓ Approve Workflow"}
+                                  </button>
+                                )}
+
+                            </div>
+                          );
+                        }
                       )}
 
                     </div>
@@ -577,13 +713,10 @@ export default function Home() {
                   </div>
 
                 </div>
-
               ) : (
-
                 <p className="text-gray-500">
                   No workflow run yet.
                 </p>
-
               )}
 
             </div>
@@ -591,9 +724,7 @@ export default function Home() {
           </aside>
 
         </div>
-
       </div>
     </main>
   );
 }
-
