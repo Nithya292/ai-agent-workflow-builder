@@ -8,7 +8,7 @@ import {
 import { ApolloProvider } from "@apollo/client/react";
 
 const httpLink = new HttpLink({
-  uri: "https://rpwtchgtqyirntusolfc.hasura.ap-south-1.nhost.run/v1/graphql",
+  uri: "https://rpwtchgtqyirntusolfc.graphql.ap-south-1.nhost.run/v1",
 });
 
 const client = new ApolloClient({
