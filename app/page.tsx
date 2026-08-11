@@ -52,7 +52,7 @@ const TRIGGER_WORKFLOW = gql`
 
 const APPROVE_WORKFLOW = async (runId: string) => {
   const response = await fetch(
-    "https://rpwtchgtqyirntusolfc.functions.ap-south-1.nhost.run/approveStep",
+    "https://rpwtchgtqyirntusolfc.functions.ap-south-1.nhost.run/v1/approveStep",
     {
       method: "POST",
       headers: {
