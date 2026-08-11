@@ -1,69 +1,100 @@
-import type { Request, Response } from "express";
-
 const GRAPHQL_URL = process.env.NHOST_GRAPHQL_URL;
+const ADMIN_SECRET = process.env.NHOST_ADMIN_SECRET;
+const FUNCTIONS_URL = process.env.NHOST_FUNCTIONS_URL;
 
-async function graphql(query: string, variables: Record<string, unknown>) {
+async function graphql(
+  query: string,
+  variables: Record<string, unknown> = {}
+) {
   if (!GRAPHQL_URL) {
-    throw new Error("NHOST_GRAPHQL_URL is not configured");
-  }
-
-  const response = await fetch(GRAPHQL_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      query,
-      variables,
-    }),
-  });
-
-  const text = await response.text();
-
-  let data: any;
-
-  try {
-    data = JSON.parse(text);
-  } catch {
-    throw new Error(`Invalid GraphQL response: ${text}`);
-  }
-
-  if (!response.ok) {
     throw new Error(
-      data?.errors?.[0]?.message ||
-        `GraphQL request failed with status ${response.status}`
+      "NHOST_GRAPHQL_URL is not configured"
     );
   }
 
-  if (data?.errors?.length) {
-    throw new Error(data.errors[0].message);
+  if (!ADMIN_SECRET) {
+    throw new Error(
+      "NHOST_ADMIN_SECRET is not configured"
+    );
   }
 
-  return data.data;
-}
+  const response = await fetch(
+    GRAPHQL_URL,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-hasura-admin-secret":
+          ADMIN_SECRET,
+      },
+      body: JSON.stringify({
+        query,
+        variables,
+      }),
+    }
+  );
 
-function sendJson(res: Response, body: unknown, status = 200) {
-  return res.status(status).json(body);
-}
+  const text = await response.text();
 
-export default async function approveStep(req: Request, res: Response) {
+  let result: any;
+
   try {
-    console.log("========== APPROVE STEP ==========");
+    result = JSON.parse(text);
+  } catch {
+    throw new Error(
+      `Invalid GraphQL response: ${text}`
+    );
+  }
+
+  if (result.errors?.length) {
+    throw new Error(
+      result.errors[0]?.message ||
+        "GraphQL request failed"
+    );
+  }
+
+  return result.data;
+}
+
+function sendJson(
+  res: any,
+  data: Record<string, unknown>,
+  status = 200
+) {
+  res.setHeader(
+    "Content-Type",
+    "application/json"
+  );
+
+  return res.status(status).json(data);
+}
+
+export default async function approveStep(
+  req: any,
+  res: any
+) {
+  try {
+    console.log(
+      "========== APPROVE STEP =========="
+    );
 
     if (req.method !== "POST") {
       return sendJson(
         res,
         {
           status: "failed",
-          message: "Only POST requests are allowed",
+          message:
+            "Only POST requests are allowed",
         },
         405
       );
     }
 
-    const { run_id } = req.body || {};
+    const runId =
+      req?.body?.input?.run_id ||
+      req?.body?.run_id;
 
-    if (!run_id) {
+    if (!runId) {
       return sendJson(
         res,
         {
@@ -74,60 +105,158 @@ export default async function approveStep(req: Request, res: Response) {
       );
     }
 
-    console.log("Approving workflow run:", run_id);
+    console.log(
+      "APPROVING RUN:",
+      runId
+    );
 
     /*
-     * Find the paused workflow run.
+     * -----------------------------------------
+     * GET WORKFLOW RUN
+     * -----------------------------------------
      */
-    const workflowResult = await graphql(
+
+    const runData = await graphql(
       `
-        query GetWorkflowRun($id: uuid!) {
+        query GetWorkflowRun(
+          $id: uuid!
+        ) {
           workflow_runs_by_pk(id: $id) {
             id
+            workflow_id
             status
-            message
           }
         }
       `,
       {
-        id: run_id,
+        id: runId,
       }
     );
 
-    const workflowRun = workflowResult?.workflow_runs_by_pk;
+    const run =
+      runData?.workflow_runs_by_pk;
 
-    if (!workflowRun) {
+    if (!run) {
       return sendJson(
         res,
         {
           status: "failed",
-          message: "Workflow run not found",
-          run_id,
+          message:
+            "Workflow run not found",
+          run_id: runId,
         },
         404
       );
     }
 
-    console.log("Current workflow status:", workflowRun.status);
-
-    if (workflowRun.status !== "paused") {
+    if (run.status !== "paused") {
       return sendJson(
         res,
         {
           status: "failed",
-          message: `Workflow is not paused. Current status: ${workflowRun.status}`,
-          run_id,
+          message:
+            `Workflow is not paused. Current status: ${run.status}`,
+          run_id: runId,
         },
         400
       );
     }
 
     /*
-     * Mark workflow as approved.
+     * -----------------------------------------
+     * FIND PAUSED APPROVAL STEP
+     * -----------------------------------------
      */
+
+    const pausedStepData =
+      await graphql(
+        `
+          query GetPausedStepRun(
+            $workflow_run_id: uuid!
+          ) {
+            step_runs(
+              where: {
+                workflow_run_id: {
+                  _eq: $workflow_run_id
+                }
+                status: {
+                  _eq: "paused"
+                }
+              }
+              limit: 1
+            ) {
+              id
+              step_id
+              status
+            }
+          }
+        `,
+        {
+          workflow_run_id: runId,
+        }
+      );
+
+    const pausedStep =
+      pausedStepData?.step_runs?.[0];
+
+    if (!pausedStep) {
+      return sendJson(
+        res,
+        {
+          status: "failed",
+          message:
+            "No paused approval step found",
+          run_id: runId,
+        },
+        400
+      );
+    }
+
+    /*
+     * -----------------------------------------
+     * COMPLETE APPROVAL STEP
+     * -----------------------------------------
+     */
+
     await graphql(
       `
-        mutation ApproveWorkflowRun($id: uuid!) {
+        mutation ApproveStep(
+          $id: uuid!
+          $output: jsonb!
+        ) {
+          update_step_runs_by_pk(
+            pk_columns: { id: $id }
+            _set: {
+              status: "completed"
+              output: $output
+            }
+          ) {
+            id
+            status
+          }
+        }
+      `,
+      {
+        id: pausedStep.id,
+        output: {
+          approved: true,
+          message:
+            "Approval granted. Workflow resumed.",
+        },
+      }
+    );
+
+    /*
+     * -----------------------------------------
+     * MARK WORKFLOW AS APPROVED
+     * -----------------------------------------
+     */
+
+    await graphql(
+      `
+        mutation ApproveWorkflow(
+          $id: uuid!
+        ) {
           update_workflow_runs_by_pk(
             pk_columns: { id: $id }
             _set: {
@@ -142,30 +271,104 @@ export default async function approveStep(req: Request, res: Response) {
         }
       `,
       {
-        id: run_id,
+        id: runId,
       }
     );
 
-    console.log("Workflow approved:", run_id);
+    console.log(
+      "APPROVAL SAVED:",
+      runId
+    );
+
+    /*
+     * -----------------------------------------
+     * RESUME WORKFLOW
+     * -----------------------------------------
+     */
+
+    if (!FUNCTIONS_URL) {
+      throw new Error(
+        "NHOST_FUNCTIONS_URL is not configured"
+      );
+    }
+
+    const resumeUrl =
+      `${FUNCTIONS_URL}/triggerWorkflowRun`;
+
+    console.log(
+      "RESUMING WORKFLOW:",
+      resumeUrl
+    );
+
+    const resumeResponse =
+      await fetch(resumeUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type":
+            "application/json",
+        },
+        body: JSON.stringify({
+          run_id: runId,
+          workflow_id:
+            run.workflow_id,
+        }),
+      });
+
+    const resumeText =
+      await resumeResponse.text();
+
+    let resumeResult: any;
+
+    try {
+      resumeResult =
+        JSON.parse(resumeText);
+    } catch {
+      resumeResult = {
+        status:
+          resumeResponse.status,
+        message: resumeText,
+      };
+    }
+
+    console.log(
+      "RESUME RESULT:",
+      resumeResult
+    );
+
+    if (!resumeResponse.ok) {
+      throw new Error(
+        resumeResult?.message ||
+          "Workflow resume failed"
+      );
+    }
 
     return sendJson(res, {
-      run_id,
-      status: "approved",
-      message: "Workflow approved successfully",
+      run_id: runId,
+      status:
+        resumeResult?.status ||
+        "completed",
+      message:
+        resumeResult?.message ||
+        "Workflow approved and resumed",
     });
   } catch (error: any) {
-    console.error("========== APPROVAL ERROR ==========");
+    console.error(
+      "========== APPROVAL ERROR =========="
+    );
+
     console.error(error);
 
     return sendJson(
       res,
       {
         run_id:
-          req.body?.run_id ||
-          "00000000-0000-0000-0000-000000000000",
+          req?.body?.input?.run_id ||
+          req?.body?.run_id ||
+          null,
         status: "failed",
         message:
-          error?.message || "Failed to approve workflow",
+          error?.message ||
+          "Failed to approve workflow",
       },
       500
     );

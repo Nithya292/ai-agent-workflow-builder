@@ -76,7 +76,7 @@ export default async function handler(req: any, res: any) {
 
     /*
      * -----------------------------------------
-     * GET WORKFLOW ID
+     * GET INPUT
      * -----------------------------------------
      */
 
@@ -84,14 +84,168 @@ export default async function handler(req: any, res: any) {
       req?.body?.input?.workflow_id ||
       req?.body?.workflow_id;
 
-    console.log("WORKFLOW ID:", workflowId);
+    const existingRunId =
+      req?.body?.input?.run_id ||
+      req?.body?.run_id;
 
-    if (!workflowId) {
-      return sendJson(res, {
-        run_id: "00000000-0000-0000-0000-000000000000",
-        status: "failed",
-        message: "workflow_id is required",
-      });
+    console.log("WORKFLOW ID:", workflowId);
+    console.log("EXISTING RUN ID:", existingRunId);
+
+    /*
+     * -----------------------------------------
+     * CREATE OR RESUME WORKFLOW RUN
+     * -----------------------------------------
+     */
+
+    if (existingRunId) {
+      /*
+       * Resume an existing workflow run.
+       */
+
+      const existingRunData = await graphql(
+        `
+          query GetWorkflowRun($id: uuid!) {
+            workflow_runs_by_pk(id: $id) {
+              id
+              workflow_id
+              status
+              message
+            }
+          }
+        `,
+        {
+          id: existingRunId,
+        }
+      );
+
+      const existingRun =
+        existingRunData?.workflow_runs_by_pk;
+
+      if (!existingRun) {
+        throw new Error("Workflow run not found");
+      }
+
+      runId = existingRun.id;
+
+      console.log(
+        "RESUMING WORKFLOW RUN:",
+        runId
+      );
+
+      /*
+       * Change approved/paused run back to started.
+       */
+
+      await graphql(
+        `
+          mutation ResumeWorkflowRun(
+            $id: uuid!
+          ) {
+            update_workflow_runs_by_pk(
+              pk_columns: { id: $id }
+              _set: {
+                status: "started"
+                message: "Workflow resumed after approval"
+              }
+            ) {
+              id
+              status
+              message
+            }
+          }
+        `,
+        {
+          id: runId,
+        }
+      );
+    } else {
+      /*
+       * New workflow execution.
+       */
+
+      if (!workflowId) {
+        return sendJson(res, {
+          run_id:
+            "00000000-0000-0000-0000-000000000000",
+          status: "failed",
+          message: "workflow_id is required",
+        });
+      }
+
+      const createRunMutation = `
+        mutation CreateWorkflowRun(
+          $workflow_id: uuid!
+        ) {
+          insert_workflow_runs_one(
+            object: {
+              workflow_id: $workflow_id
+              status: "started"
+              message: "Workflow started successfully"
+            }
+          ) {
+            id
+            status
+            message
+          }
+        }
+      `;
+
+      const runData = await graphql(
+        createRunMutation,
+        {
+          workflow_id: workflowId,
+        }
+      );
+
+      const run =
+        runData?.insert_workflow_runs_one;
+
+      if (!run?.id) {
+        throw new Error(
+          "Could not create workflow run"
+        );
+      }
+
+      runId = run.id;
+
+      console.log(
+        "NEW WORKFLOW RUN:",
+        runId
+      );
+    }
+
+    /*
+     * -----------------------------------------
+     * GET ACTUAL WORKFLOW ID
+     * -----------------------------------------
+     */
+
+    let actualWorkflowId = workflowId;
+
+    if (!actualWorkflowId && runId) {
+      const runData = await graphql(
+        `
+          query GetWorkflowRunWorkflow(
+            $id: uuid!
+          ) {
+            workflow_runs_by_pk(id: $id) {
+              workflow_id
+            }
+          }
+        `,
+        {
+          id: runId,
+        }
+      );
+
+      actualWorkflowId =
+        runData?.workflow_runs_by_pk?.workflow_id;
+    }
+
+    if (!actualWorkflowId) {
+      throw new Error(
+        "Could not determine workflow_id"
+      );
     }
 
     /*
@@ -101,7 +255,9 @@ export default async function handler(req: any, res: any) {
      */
 
     const stepsQuery = `
-      query GetWorkflowSteps($workflow_id: uuid!) {
+      query GetWorkflowSteps(
+        $workflow_id: uuid!
+      ) {
         workflow_steps(
           where: {
             workflow_id: {
@@ -121,70 +277,59 @@ export default async function handler(req: any, res: any) {
       }
     `;
 
-    const stepsData = await graphql(stepsQuery, {
-      workflow_id: workflowId,
-    });
-
-    console.log("WORKFLOW STEPS:", stepsData);
+    const stepsData = await graphql(
+      stepsQuery,
+      {
+        workflow_id: actualWorkflowId,
+      }
+    );
 
     const steps: WorkflowStep[] =
       stepsData?.workflow_steps || [];
-
-    if (steps.length === 0) {
-      return sendJson(res, {
-        run_id: "00000000-0000-0000-0000-000000000000",
-        status: "failed",
-        message: "No workflow steps found",
-      });
-    }
 
     console.log(
       `Found ${steps.length} workflow steps`
     );
 
-    /*
-     * -----------------------------------------
-     * CREATE WORKFLOW RUN
-     * -----------------------------------------
-     */
-
-    const createRunMutation = `
-      mutation CreateWorkflowRun(
-        $workflow_id: uuid!
-      ) {
-        insert_workflow_runs_one(
-          object: {
-            workflow_id: $workflow_id
-            status: "started"
-            message: "Workflow started successfully"
-          }
-        ) {
-          id
-          status
-          message
-        }
-      }
-    `;
-
-    const runData = await graphql(
-      createRunMutation,
-      {
-        workflow_id: workflowId,
-      }
-    );
-
-    console.log("WORKFLOW RUN:", runData);
-
-    const run =
-      runData?.insert_workflow_runs_one;
-
-    if (!run?.id) {
+    if (steps.length === 0) {
       throw new Error(
-        "Could not create workflow run"
+        "No workflow steps found"
       );
     }
 
-    runId = run.id;
+    /*
+     * -----------------------------------------
+     * GET EXISTING STEP RUNS
+     * -----------------------------------------
+     *
+     * This is what makes RESUME work.
+     */
+
+    const stepRunsData = await graphql(
+      `
+        query GetStepRuns(
+          $workflow_run_id: uuid!
+        ) {
+          step_runs(
+            where: {
+              workflow_run_id: {
+                _eq: $workflow_run_id
+              }
+            }
+          ) {
+            id
+            step_id
+            status
+          }
+        }
+      `,
+      {
+        workflow_run_id: runId,
+      }
+    );
+
+    const existingStepRuns =
+      stepRunsData?.step_runs || [];
 
     /*
      * -----------------------------------------
@@ -200,11 +345,34 @@ export default async function handler(req: any, res: any) {
 
     /*
      * -----------------------------------------
-     * EXECUTE STEPS IN ORDER
+     * EXECUTE STEPS
      * -----------------------------------------
      */
 
     for (const step of steps) {
+      /*
+       * ---------------------------------------
+       * CHECK WHETHER THIS STEP ALREADY FINISHED
+       * ---------------------------------------
+       */
+
+      const previousStepRun =
+        existingStepRuns.find(
+          (item: any) =>
+            item.step_id === step.id
+        );
+
+      if (
+        previousStepRun?.status ===
+        "completed"
+      ) {
+        console.log(
+          `Skipping completed step ${step.step_order}: ${step.name}`
+        );
+
+        continue;
+      }
+
       console.log(
         `Executing step ${step.step_order}: ${step.name} (${step.type})`
       );
@@ -215,48 +383,70 @@ export default async function handler(req: any, res: any) {
        * ---------------------------------------
        */
 
-      const createStepRunMutation = `
-        mutation CreateStepRun(
-          $workflow_run_id: uuid!
-          $step_id: uuid!
-          $status: String!
-        ) {
-          insert_step_runs_one(
-            object: {
-              workflow_run_id: $workflow_run_id
-              step_id: $step_id
-              status: $status
-              attempt_count: 1
-            }
+      let stepRunId =
+        previousStepRun?.id || null;
+
+      if (!stepRunId) {
+        const createStepRunMutation = `
+          mutation CreateStepRun(
+            $workflow_run_id: uuid!
+            $step_id: uuid!
+            $status: String!
           ) {
-            id
-            status
+            insert_step_runs_one(
+              object: {
+                workflow_run_id: $workflow_run_id
+                step_id: $step_id
+                status: $status
+                attempt_count: 1
+              }
+            ) {
+              id
+              status
+            }
           }
-        }
-      `;
+        `;
 
-      let stepRunData: any = null;
+        const stepRunData =
+          await graphql(
+            createStepRunMutation,
+            {
+              workflow_run_id: runId,
+              step_id: step.id,
+              status: "running",
+            }
+          );
 
-      try {
-        stepRunData = await graphql(
-          createStepRunMutation,
+        stepRunId =
+          stepRunData
+            ?.insert_step_runs_one?.id;
+      } else {
+        /*
+         * If this was previously paused,
+         * mark it as running again.
+         */
+
+        await graphql(
+          `
+            mutation ResumeStepRun(
+              $id: uuid!
+            ) {
+              update_step_runs_by_pk(
+                pk_columns: { id: $id }
+                _set: {
+                  status: "running"
+                }
+              ) {
+                id
+                status
+              }
+            }
+          `,
           {
-            workflow_run_id: run.id,
-            step_id: step.id,
-            status: "running",
+            id: stepRunId,
           }
         );
-      } catch (error) {
-  console.error(
-    "STEP_RUN INSERT ERROR:",
-    JSON.stringify(error, null, 2)
-  );
-
-  throw error;
-}
-
-      const stepRunId =
-        stepRunData?.insert_step_runs_one?.id;
+      }
 
       /*
        * ---------------------------------------
@@ -278,7 +468,8 @@ export default async function handler(req: any, res: any) {
           {
             method: "POST",
             headers: {
-              "Content-Type": "application/json",
+              "Content-Type":
+                "application/json",
               Authorization:
                 `Bearer ${GROQ_API_KEY}`,
             },
@@ -300,11 +491,6 @@ export default async function handler(req: any, res: any) {
         const groqResult =
           await groqResponse.json();
 
-        console.log(
-          "AI RESPONSE:",
-          groqResult
-        );
-
         if (!groqResponse.ok) {
           throw new Error(
             groqResult?.error?.message ||
@@ -313,13 +499,8 @@ export default async function handler(req: any, res: any) {
         }
 
         aiMessage =
-          groqResult?.choices?.[0]?.message
-            ?.content || "";
-
-        console.log(
-          "AI MESSAGE:",
-          aiMessage
-        );
+          groqResult?.choices?.[0]
+            ?.message?.content || "";
 
         if (stepRunId) {
           await graphql(
@@ -367,10 +548,6 @@ export default async function handler(req: any, res: any) {
           | ApiResponse
           | null = null;
 
-        /*
-         * First attempt
-         */
-
         try {
           const response = await fetch(
             "https://jsonplaceholder.typicode.com/todos/1"
@@ -390,10 +567,6 @@ export default async function handler(req: any, res: any) {
             firstError
           );
 
-          /*
-           * Retry once
-           */
-
           const retryResponse =
             await fetch(
               "https://jsonplaceholder.typicode.com/todos/1"
@@ -410,11 +583,6 @@ export default async function handler(req: any, res: any) {
         }
 
         workflowApiData = apiData;
-
-        console.log(
-          "API RESPONSE:",
-          workflowApiData
-        );
 
         if (stepRunId) {
           await graphql(
@@ -457,6 +625,55 @@ export default async function handler(req: any, res: any) {
           "Conditional branch step reached"
         );
 
+        /*
+         * On resume, recover the API data
+         * from the previous HTTP step if needed.
+         */
+
+        if (!workflowApiData) {
+          const apiStep =
+            steps.find(
+              (item) =>
+                item.type ===
+                "http_request"
+            );
+
+          if (apiStep) {
+            const apiStepRun =
+              existingStepRuns.find(
+                (item: any) =>
+                  item.step_id ===
+                  apiStep.id
+              );
+
+            if (apiStepRun?.id) {
+              const outputData =
+                await graphql(
+                  `
+                    query GetStepRun(
+                      $id: uuid!
+                    ) {
+                      step_runs_by_pk(
+                        id: $id
+                      ) {
+                        output
+                      }
+                    }
+                  `,
+                  {
+                    id:
+                      apiStepRun.id,
+                  }
+                );
+
+              workflowApiData =
+                outputData
+                  ?.step_runs_by_pk
+                  ?.output || null;
+            }
+          }
+        }
+
         if (!workflowApiData) {
           throw new Error(
             "No API data available for conditional branch"
@@ -466,23 +683,9 @@ export default async function handler(req: any, res: any) {
         const condition =
           workflowApiData.completed === true;
 
-        let branchMessage = "";
-
-        if (condition) {
-          branchMessage =
-            "API task is completed";
-
-          console.log(
-            "CONDITION RESULT: TRUE - API task is completed"
-          );
-        } else {
-          branchMessage =
-            "API task is not completed";
-
-          console.log(
-            "CONDITION RESULT: FALSE - API task is not completed"
-          );
-        }
+        const branchMessage = condition
+          ? "API task is completed"
+          : "API task is not completed";
 
         if (stepRunId) {
           await graphql(
@@ -525,33 +728,11 @@ export default async function handler(req: any, res: any) {
         "approval_gate"
       ) {
         console.log(
-          "================================="
-        );
-
-        console.log(
           "APPROVAL GATE REACHED"
         );
 
-        console.log(
-          "RUN ID:",
-          run.id
-        );
-
-        console.log(
-          "STEP:",
-          step.name
-        );
-
-        console.log(
-          "PAUSING WORKFLOW NOW"
-        );
-
-        console.log(
-          "================================="
-        );
-
         /*
-         * Mark approval step as paused
+         * Pause the step.
          */
 
         if (stepRunId) {
@@ -582,58 +763,37 @@ export default async function handler(req: any, res: any) {
               },
             }
           );
-
-          console.log(
-            "STEP RUN PAUSED:",
-            stepRunId
-          );
         }
 
         /*
-         * Mark workflow run as paused
+         * Pause the workflow.
          */
 
-        const pausedRun =
-          await graphql(
-            `
-              mutation PauseWorkflowRun(
-                $id: uuid!
-              ) {
-                update_workflow_runs_by_pk(
-                  pk_columns: { id: $id }
-                  _set: {
-                    status: "paused"
-                    message: "Workflow paused - awaiting approval"
-                  }
-                ) {
-                  id
-                  status
-                  message
+        await graphql(
+          `
+            mutation PauseWorkflowRun(
+              $id: uuid!
+            ) {
+              update_workflow_runs_by_pk(
+                pk_columns: { id: $id }
+                _set: {
+                  status: "paused"
+                  message: "Workflow paused - awaiting approval"
                 }
+              ) {
+                id
+                status
+                message
               }
-            `,
-            {
-              id: run.id,
             }
-          );
-
-        console.log(
-          "WORKFLOW STATUS UPDATED:",
-          pausedRun
+          `,
+          {
+            id: runId,
+          }
         );
-
-        console.log(
-          "WORKFLOW PAUSED:",
-          run.id
-        );
-
-        /*
-         * VERY IMPORTANT:
-         * Stop execution immediately.
-         */
 
         return sendJson(res, {
-          run_id: run.id,
+          run_id: runId,
           status: "paused",
           message:
             "Workflow paused - awaiting approval",
@@ -642,12 +802,6 @@ export default async function handler(req: any, res: any) {
             stepRunId || null,
         });
       }
-
-      /*
-       * ---------------------------------------
-       * UNSUPPORTED STEP
-       * ---------------------------------------
-       */
 
       else {
         throw new Error(
@@ -685,17 +839,17 @@ export default async function handler(req: any, res: any) {
         }
       `,
       {
-        id: run.id,
+        id: runId,
       }
     );
 
     console.log(
       "WORKFLOW COMPLETED:",
-      run.id
+      runId
     );
 
     return sendJson(res, {
-      run_id: run.id,
+      run_id: runId,
       status: "completed",
       message:
         "Workflow completed successfully",
@@ -708,11 +862,6 @@ export default async function handler(req: any, res: any) {
     );
 
     console.error(error);
-
-    /*
-     * If a workflow run was already created,
-     * mark it as failed in the database.
-     */
 
     if (runId) {
       try {
@@ -761,4 +910,3 @@ export default async function handler(req: any, res: any) {
     });
   }
 }
-

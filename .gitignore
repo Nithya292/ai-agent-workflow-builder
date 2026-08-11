@@ -39,3 +39,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+.secrets
+
+# Nhost local/project configuration
+.nhost/
+nhost/.nhost/
+nhost/nhost.toml
